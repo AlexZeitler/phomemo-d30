@@ -58,13 +58,14 @@ pub fn generate_image(
     let font = Font::try_from_vec(font).context(CouldNotInitFontSnafu)?;
     // let scale = Scale::uniform(font_scale);
 
+    let lines: Vec<&str> = text.split('\n').collect();
+
     let scale = match font_scale {
         D30Scale::Auto { minus } => {
             // let scale = 100.0;
-            let actual_size: Dimensions =
-                imageproc::drawing::text_size(Scale::uniform(100.0), &font, &text).into();
-            let scale_by_x = (label_dimensions.x - 2.0 * margins) / actual_size.x;
-            let scale_by_y = (label_dimensions.y - 2.0 * margins) / actual_size.y;
+            let (block_x, block_y) = measure_block(&font, 100.0, &lines);
+            let scale_by_x = (label_dimensions.x - 2.0 * margins) / block_x;
+            let scale_by_y = (label_dimensions.y - 2.0 * margins) / block_y;
             100.0
                 * if scale_by_y > scale_by_x {
                     scale_by_x
@@ -75,28 +76,60 @@ pub fn generate_image(
         }
         D30Scale::Value(font_scale) => font_scale,
     };
-    let actual_size: Dimensions =
-        imageproc::drawing::text_size(Scale::uniform(scale), &font, &text).into();
-    let txt_pos = (actual_size - label_dimensions) / -2.;
 
     let mut canvas: ImageBuffer<Rgb<u8>, _> = ImageBuffer::new(
         label_dimensions.width() as u32,
         label_dimensions.height() as u32,
     );
 
-    imageproc::drawing::draw_text_mut(
-        &mut canvas,
-        COLOR_BLACK,
-        txt_pos.x as i32,
-        txt_pos.y as i32,
-        Scale::uniform(scale),
-        &font,
-        text,
-    );
+    let uniform = Scale::uniform(scale);
+    let (_, block_y) = measure_block(&font, scale, &lines);
+    let top = (label_dimensions.y - block_y) / 2.0;
+    let step = line_height(&font, scale);
+
+    for (index, line) in lines.iter().enumerate() {
+        let width = imageproc::drawing::text_size(uniform, &font, line).0 as f32;
+        let left = (label_dimensions.x - width) / 2.0;
+        imageproc::drawing::draw_text_mut(
+            &mut canvas,
+            COLOR_BLACK,
+            left as i32,
+            (top + index as f32 * step) as i32,
+            uniform,
+            &font,
+            line,
+        );
+    }
 
     let canvas = DynamicImage::from(canvas).rotate270();
 
     Ok(canvas)
+}
+
+/// Vertical distance between the tops of two consecutive lines.
+fn line_height(font: &Font, scale: f32) -> f32 {
+    let metrics = font.v_metrics(Scale::uniform(scale));
+    metrics.ascent - metrics.descent + metrics.line_gap
+}
+
+/// Extent of the whole text block: the widest line, and the distance from the
+/// top of the first line down to the lowest glyph of the last one.
+///
+/// `text_size` measures from the top of the line, so for a single line this
+/// returns exactly what the old single-line code measured.
+fn measure_block(font: &Font, scale: f32, lines: &[&str]) -> (f32, f32) {
+    let uniform = Scale::uniform(scale);
+    let mut width = 0.0f32;
+    let mut last_line_height = 0.0f32;
+
+    for line in lines {
+        let (line_width, height) = imageproc::drawing::text_size(uniform, font, line);
+        width = width.max(line_width as f32);
+        last_line_height = height as f32;
+    }
+
+    let height = (lines.len() - 1) as f32 * line_height(font, scale) + last_line_height;
+    (width, height)
 }
 
 pub fn pack_image(image: &DynamicImage) -> Vec<u8> {
